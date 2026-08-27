@@ -1,7 +1,6 @@
 {
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index?__path=$1" },
-    { "source": "/ai/chat", "destination": "/api/index?__path=ai/chat" },
+    { "source": "/ai/chat", "destination": "/api/ai/chat" },
     { "source": "/(.*)", "destination": "/index.html" }
   ],
   "crons": [
