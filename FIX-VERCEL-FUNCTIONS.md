@@ -1,35 +1,35 @@
-# Fix error 12 Serverless Functions (Hobby Plan)
+# Error "File not found: api/[...path].js"
 
-Penyebab error: Vercel menghitung **setiap file `.js` di folder `api/`** sebagai 1 function.
-Repo lama punya ~14 file endpoint → tembus limit 12.
+Nama file `[...path].js` memakai karakter `[` `]`.
+Git/Vercel sering **gagal meng-upload file itu**, lalu build mencari file yang tidak ada.
 
-## Struktur yang WAJIB dipakai
+Jangan pakai `[...path].js`. Pakai `api/index.js` (nama biasa).
+
+## Isi folder api yang benar
+
+Hanya 1 file:
 
 ```
-api/
-  index.js          ← SATU-SATUNYA function
-lib/
-  supabase.js       ← helper (di LUAR /api, tidak dihitung)
-.vercelignore       ← memblokir file endpoint lama meski masih ada di Git
-vercel.json
+api/index.js
+lib/supabase.js
 ```
 
-Jangan ada `api/categories.js`, `api/photos.js`, `api/tiktok/*.js`, `api/[...path].js`, dll.
+Hapus dari GitHub:
 
-## Cara deploy yang benar (paling sering gagal di sini)
+- api/[...path].js
+- api/_supabase.js
+- api/categories.js, photos.js, exports.js, quota.js, schedule.js
+- api/ai/, api/cron/, api/photos/, api/exports/, api/tiktok/
 
-Error tetap muncul hampir selalu karena **file lama masih ada di GitHub**.
-Menambah file baru TIDAK menghapus file lama.
+## Git (wajib)
 
-1. Di repo GitHub / komputer lokal, **hapus seluruh isi lama folder `api/`** lalu ganti dengan ZIP ini.
-2. Commit **penghapusan** (git status harus banyak `deleted: api/...`).
-3. Push.
-4. Vercel → Deployments → Redeploy → **matikan build cache**.
+```bash
+git rm -f --ignore-unmatch "api/[...path].js" api/_supabase.js
+git add -A api/index.js lib/supabase.js vercel.json .vercelignore
+git status
+# api/ harus hanya index.js
+git commit -m "fix: single api/index.js serverless function"
+git push
+```
 
-Atau di Vercel: **Settings → General → Root Directory** pastikan menunjuk ke folder yang berisi `api/index.js` (bukan subfolder lama).
-
-## Cek setelah deploy
-
-Tab **Functions** harus hanya: `api/index` (1 function).
-
-Kalau masih banyak nama `api/photos`, `api/tiktok/post`, dst. — commit yang di-deploy masih yang lama.
+Lalu Vercel Redeploy (tanpa cache).
