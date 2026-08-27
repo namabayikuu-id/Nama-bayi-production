@@ -161,7 +161,7 @@ function MainPage({ onGoToDb }) {
     document.head.appendChild(s);
 
     // Cek apakah Groq key tersedia
-    fetch("/ai/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: "reply with valid json: {\"ok\":true}" }) })
+    fetch("/api/ai/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: "reply with valid json: {\"ok\":true}" }) })
       .then(r => r.json()).then(d => setAiStatus(d.error ? "no-key" : "ok")).catch(() => setAiStatus("no-key"));
   }, []);
 
@@ -250,7 +250,7 @@ function MainPage({ onGoToDb }) {
   }
 
   const callAI = async (prompt) => {
-    const res = await fetch("/ai/chat", {
+    const res = await fetch("/api/ai/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt }),
