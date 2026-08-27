@@ -1,50 +1,35 @@
-# Fix: "No more than 12 Serverless Functions" (Hobby Plan)
+# Fix error 12 Serverless Functions (Hobby Plan)
 
-## Apa yang diubah
-Folder `api/` sekarang HANYA berisi 2 file:
+Penyebab error: Vercel menghitung **setiap file `.js` di folder `api/`** sebagai 1 function.
+Repo lama punya ~14 file endpoint → tembus limit 12.
+
+## Struktur yang WAJIB dipakai
 
 ```
 api/
-  [...path].js   ← 1 Serverless Function (catch-all untuk SEMUA route /api/*)
-  _supabase.js   ← helper (awalan _ = TIDAK dihitung sebagai function)
+  index.js          ← SATU-SATUNYA function
+lib/
+  supabase.js       ← helper (di LUAR /api, tidak dihitung)
+.vercelignore       ← memblokir file endpoint lama meski masih ada di Git
+vercel.json
 ```
 
-Semua endpoint lama sudah digabung ke dalam `[...path].js`.
+Jangan ada `api/categories.js`, `api/photos.js`, `api/tiktok/*.js`, `api/[...path].js`, dll.
 
-## Langkah wajib agar error hilang
+## Cara deploy yang benar (paling sering gagal di sini)
 
-### 1. Pastikan file lama sudah TERHAPUS di Git
-Di komputer lokal / di repo GitHub, folder `api/` harus persis seperti di atas.
-Jalankan di root project:
+Error tetap muncul hampir selalu karena **file lama masih ada di GitHub**.
+Menambah file baru TIDAK menghapus file lama.
 
-```bash
-# Hapus sisa file endpoint lama (jika masih ada)
-rm -f api/categories.js api/exports.js api/photos.js api/quota.js api/schedule.js api/index.js
-rm -rf api/ai api/cron api/exports api/photos api/tiktok
+1. Di repo GitHub / komputer lokal, **hapus seluruh isi lama folder `api/`** lalu ganti dengan ZIP ini.
+2. Commit **penghapusan** (git status harus banyak `deleted: api/...`).
+3. Push.
+4. Vercel → Deployments → Redeploy → **matikan build cache**.
 
-# Pastikan hanya 2 file
-ls -la api/
-# Harus hanya: [...path].js  dan  _supabase.js
-```
+Atau di Vercel: **Settings → General → Root Directory** pastikan menunjuk ke folder yang berisi `api/index.js` (bukan subfolder lama).
 
-### 2. Commit & push SEMUA penghapusan
-```bash
-git add -A
-git status   # cek: banyak file api/* berwarna merah (deleted)
-git commit -m "fix: consolidate all API into single catch-all function"
-git push
-```
+## Cek setelah deploy
 
-### 3. Redeploy di Vercel (dengan clear cache)
-1. Buka Vercel Dashboard → project Anda
-2. Tab **Deployments**
-3. Klik **...** pada deployment terbaru → **Redeploy**
-4. Centang **Use existing Build Cache** = **OFF** / clear cache
-5. Deploy
+Tab **Functions** harus hanya: `api/index` (1 function).
 
-### 4. Verifikasi
-Setelah deploy sukses, buka tab **Functions** di project Vercel.
-Harus hanya muncul **1 function**: `api/[...path]`
-
-Jika masih >1, berarti file lama masih ada di source yang di-deploy
-(cek tab Source / Git commit hash yang dipakai).
+Kalau masih banyak nama `api/photos`, `api/tiktok/post`, dst. — commit yang di-deploy masih yang lama.

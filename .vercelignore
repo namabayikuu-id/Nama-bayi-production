@@ -1,0 +1,41 @@
+# ── CRITICAL: leftover /api/*.js files each become a Serverless Function.
+# Hobby plan allows max 12. Ignore every endpoint except api/index.js
+# so even if old files still exist in Git, Vercel will NOT deploy them.
+
+api/ai
+api/ai/**
+api/cron
+api/cron/**
+api/exports
+api/exports/**
+api/photos
+api/photos/**
+api/tiktok
+api/tiktok/**
+api/categories.js
+api/exports.js
+api/photos.js
+api/quota.js
+api/schedule.js
+api/_supabase.js
+api/_supabase.ts
+api/[...path].js
+api/[...path].ts
+api/server.js
+api/chat.js
+
+# Next.js-style leftovers (should not exist in this Vite app)
+pages/api
+pages/api/**
+app/api
+app/api/**
+src/pages/api
+src/pages/api/**
+
+# Dev / git noise
+node_modules
+.git
+.github
+*.md
+.env
+.env.*

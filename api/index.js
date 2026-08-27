@@ -1,6 +1,7 @@
 /**
- * Single Serverless Function entrypoint for Vercel Hobby Plan
- * All /api/* routes are handled here to stay under the 12-function limit.
+ * SATU-SATUNYA Serverless Function untuk Vercel Hobby Plan.
+ * Semua request /api/* di-rewrite ke file ini (lihat vercel.json).
+ * Jangan tambah file .js lain di folder /api — tiap file = 1 function.
  */
 import {
   supabase,
@@ -8,31 +9,58 @@ import {
   addQuotaUsage,
   NEURONS_PER_IMAGE,
   DAILY_BUDGET,
-} from './_supabase.js'
+} from '../lib/supabase.js'
 
 // ── Path helpers ─────────────────────────────────────────────────────────────
-function getPath(req) {
-  // 1) Path injected by vercel.json rewrite (?__path=...)
-  if (req.query && req.query.__path) {
-    let p = Array.isArray(req.query.__path) ? req.query.__path[0] : req.query.__path
-    p = String(p).split('?')[0]
-    if (!p.startsWith('/')) p = '/' + p
-    if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1)
-    return p
+function stripQuery(s) {
+  return String(s || '').split('?')[0]
+}
+
+function normalizeApiPath(input) {
+  if (!input) return ''
+  let path = stripQuery(input)
+  try { path = decodeURIComponent(path) } catch {}
+  if (/^https?:\/\//i.test(path)) {
+    try { path = new URL(path).pathname } catch {}
   }
-  // 2) Headers Vercel may set
-  const raw =
-    req.headers['x-invoke-path'] ||
-    req.headers['x-matched-path'] ||
-    req.headers['x-forwarded-uri'] ||
-    req.url ||
-    '/'
-  let path = String(raw).split('?')[0]
-  if (path.startsWith('/api/index')) path = '/'
-  else if (path.startsWith('/api')) path = path.slice(4) || '/'
+  // After rewrite, destination is /api/index — ignore that
+  if (path === '/api/index' || path === '/api/index.js' || path === '/api') return ''
+  if (path.startsWith('/api/index/')) path = path.slice('/api/index'.length)
+  else if (path.startsWith('/api/')) path = path.slice(4)
+  else if (path === '/ai/chat' || path.startsWith('/ai/chat')) path = '/ai/chat'
   if (!path.startsWith('/')) path = '/' + path
   if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1)
+  if (path === '/index' || path === '/index.js') return ''
   return path
+}
+
+function getPath(req) {
+  const h = req.headers || {}
+  const candidates = [
+    h['x-forwarded-uri'],
+    h['x-invoke-path'],
+    h['x-matched-path'],
+    h['x-vercel-original-path'],
+    h['x-real-url'],
+    req.originalUrl,
+    req.url,
+  ]
+  for (const c of candidates) {
+    const p = normalizeApiPath(c)
+    if (p && p !== '/') return p
+  }
+  const q = req.query || {}
+  if (q.path !== undefined) {
+    const segs = Array.isArray(q.path) ? q.path : [q.path]
+    const p = normalizeApiPath('/' + segs.filter(Boolean).join('/'))
+    if (p && p !== '/') return p
+  }
+  if (q.__path) {
+    const raw = Array.isArray(q.__path) ? q.__path[0] : q.__path
+    const p = normalizeApiPath('/' + raw)
+    if (p && p !== '/') return p
+  }
+  return '/'
 }
 
 // ── Main router ──────────────────────────────────────────────────────────────
