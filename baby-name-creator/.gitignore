@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Env (jangan commit!)
+.env
+
+# Build output
+dist/
+
+# Quota tracker (reset harian, tidak perlu di repo)
+public/photos/_quota.json
+
+# Tapi foto & exports WAJIB di-commit supaya GitHub Actions bisa pakai
+# public/photos/ --> TIDAK di-ignore
+# public/exports/ --> TIDAK di-ignore
