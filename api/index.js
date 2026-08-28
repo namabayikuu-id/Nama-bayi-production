@@ -526,7 +526,7 @@ async function handleAiChat(req, res, method) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'openai/gpt-oss-120b',
+        model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
         messages: [
           {
             role: 'system',

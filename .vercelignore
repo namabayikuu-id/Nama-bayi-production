@@ -1,5 +1,4 @@
-# Old per-route handlers — each would become a Serverless Function (Hobby max 12)
-api/ai/
+# Old per-route handlers (api/ai/chat.js is kept — that's the live Groq route)
 api/cron/
 api/exports/
 api/photos/

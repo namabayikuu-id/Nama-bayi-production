@@ -6,7 +6,7 @@ export default async function handler(req, res) {
       method: 'POST',
       headers: { Authorization:`Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type':'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.1-8b-instant',
+        model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
         messages: [
           { role:'system', content:'Respond ONLY with valid JSON, no explanation, no markdown.' },
           { role:'user', content:prompt },
