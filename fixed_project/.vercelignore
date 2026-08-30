@@ -1,0 +1,16 @@
+# Old per-route handlers — each would become a Serverless Function (Hobby max 12)
+api/ai/
+api/cron/
+api/exports/
+api/photos/
+api/tiktok/
+api/categories.js
+api/exports.js
+api/photos.js
+api/quota.js
+api/schedule.js
+api/_supabase.js
+
+node_modules
+.env
+.env.*

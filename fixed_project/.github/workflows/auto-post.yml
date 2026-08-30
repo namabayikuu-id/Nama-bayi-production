@@ -1,0 +1,51 @@
+name: 🍼 Auto Post TikTok
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 07:00 WIB (UTC+7 = 00:00 UTC)
+    - cron: '0 8 * * *'   # 15:00 WIB (UTC+7 = 08:00 UTC)
+  workflow_dispatch:       # bisa trigger manual dari GitHub Actions tab
+
+permissions:
+  contents: write          # butuh untuk git push balik
+
+jobs:
+  auto-post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm install @napi-rs/canvas node-fetch
+
+      - name: Install fonts
+        run: |
+          sudo apt-get install -y fonts-dejavu fonts-liberation
+          fc-cache -fv
+
+      - name: Run auto pipeline
+        env:
+          GROQ_API_KEY:          ${{ secrets.GROQ_API_KEY }}
+          CF_WORKER_URL:         ${{ secrets.CF_WORKER_URL }}
+          TIKTOK_CLIENT_KEY:     ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET:  ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          GITHUB_PAGES_URL:      ${{ secrets.GITHUB_PAGES_URL }}
+          GITHUB_ACTOR:          ${{ github.actor }}
+        run: node .github/scripts/auto-pipeline.mjs
+
+      - name: Commit & push hasil
+        run: |
+          git config user.name  "Baby Name Bot"
+          git config user.email "bot@babyname.local"
+          git add public/exports/ public/photos/
+          git diff --cached --quiet || git commit -m "🍼 auto post $(date '+%Y-%m-%d %H:%M WIB')"
+          git push origin main
