@@ -175,10 +175,13 @@ const DEFAULT_CATEGORIES = [
 
 async function handleCategories(req, res, method) {
   if (method === 'GET') {
-    let { data } = await supabase.from('categories').select('*').order('created_at')
+    let { data, error: selErr } = await supabase.from('categories').select('*').order('created_at')
+    if (selErr) return res.status(500).json({ error: 'Select categories: ' + selErr.message })
     if (!data?.length) {
-      await supabase.from('categories').upsert(DEFAULT_CATEGORIES)
-      data = DEFAULT_CATEGORIES
+      const { data: seeded, error: seedErr } = await supabase
+        .from('categories').upsert(DEFAULT_CATEGORIES).select()
+      if (seedErr) return res.status(500).json({ error: 'Seed categories: ' + seedErr.message })
+      data = seeded
     }
     return res.json(
       data.map((c) => ({
@@ -193,13 +196,14 @@ async function handleCategories(req, res, method) {
 
   if (method === 'POST') {
     const { id, label, emoji, promptMale, promptFemale } = req.body || {}
-    await supabase.from('categories').upsert({
+    const { error: upErr } = await supabase.from('categories').upsert({
       id,
       label,
       emoji,
       prompt_male: promptMale,
       prompt_female: promptFemale,
     })
+    if (upErr) return res.status(500).json({ error: 'Upsert category: ' + upErr.message })
     return res.json({ ok: true })
   }
 
@@ -212,7 +216,8 @@ async function handleCategories(req, res, method) {
     if (photos?.length) {
       await supabase.storage.from('photos').remove(photos.map((p) => p.storage_path))
     }
-    await supabase.from('categories').delete().eq('id', id)
+    const { error: delErr } = await supabase.from('categories').delete().eq('id', id)
+    if (delErr) return res.status(500).json({ error: 'Delete category: ' + delErr.message })
     return res.json({ ok: true })
   }
 
