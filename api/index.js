@@ -287,10 +287,16 @@ async function handlePhotosSave(req, res, method) {
     if (upErr) throw new Error('Upload storage: ' + upErr.message)
     const { data: { publicUrl } } = supabase.storage.from('photos').getPublicUrl(storagePath)
     const expiresAt = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString()
-    await supabase.from('photos').insert({
+    const { error: insErr } = await supabase.from('photos').insert({
       category_id: category, gender, filename,
       storage_path: storagePath, url: publicUrl, expires_at: expiresAt,
     })
+    if (insErr) {
+      // Rollback: file sudah kepalang keupload ke storage tapi row gagal masuk DB.
+      // Hapus filenya lagi biar tidak jadi sampah "sukses di bucket tapi ga muncul di app".
+      await supabase.storage.from('photos').remove([storagePath]).catch(() => {})
+      throw new Error('Insert DB: ' + insErr.message)
+    }
     // Catat quota setelah berhasil simpan
     const quota = await addQuotaUsage(NEURONS_PER_IMAGE)
     console.log('[api] ✅ Photo saved:', storagePath, '| Quota:', quota.used + '/' + quota.budget)
