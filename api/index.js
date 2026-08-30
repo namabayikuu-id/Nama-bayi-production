@@ -246,95 +246,55 @@ async function handlePhotosGenerate(req, res, method) {
   if (method !== 'POST') return res.status(405).end()
   const { prompt, category, gender, seed } = req.body || {}
 
+  // Cek quota dulu
   const q = await getQuota()
   if (q.used_neurons + NEURONS_PER_IMAGE > DAILY_BUDGET) {
-    return res
-      .status(429)
-      .json({ error: 'QUOTA_EXCEEDED: Budget neuron harian habis. Reset 00:00 UTC.' })
+    return res.status(429).json({ error: 'QUOTA_EXCEEDED: Budget neuron harian habis. Reset 00:00 UTC.' })
   }
 
-  try {
-    const cfUrl = process.env.CF_WORKER_URL
-    if (!cfUrl) throw new Error('CF_WORKER_URL belum diset di Vercel environment variables')
+  const cfUrl = process.env.CF_WORKER_URL
+  if (!cfUrl) return res.status(500).json({ error: 'CF_WORKER_URL belum diset' })
 
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 120000)
-    const cfRes = await fetch(cfUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, seed }),
-      signal: ctrl.signal,
-    })
-    clearTimeout(t)
-
-    if (!cfRes.ok) throw new Error('Cloudflare Worker HTTP ' + cfRes.status)
-    const buf = Buffer.from(await cfRes.arrayBuffer())
-    if (buf.length < 5000) throw new Error('Gambar terlalu kecil')
-
-    const filename = `${Date.now()}_${seed}.jpg`
-    const storagePath = `${category}/${gender}/${filename}`
-    const { error: upErr } = await supabase.storage
-      .from('photos')
-      .upload(storagePath, buf, { contentType: 'image/jpeg', upsert: false })
-    if (upErr) throw new Error('Upload storage: ' + upErr.message)
-
-    const {
-      data: { publicUrl },
-    } = supabase.storage.from('photos').getPublicUrl(storagePath)
-
-    const expiresAt = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString()
-    await supabase.from('photos').insert({
-      category_id: category,
-      gender,
-      filename,
-      storage_path: storagePath,
-      url: publicUrl,
-      expires_at: expiresAt,
-    })
-
-    const quota = await addQuotaUsage(NEURONS_PER_IMAGE)
-    console.log('[api] ✅ Photo saved:', storagePath, '| Quota:', quota.used + '/' + quota.budget)
-    return res.json({ url: publicUrl, filename, quota })
-  } catch (e) {
-    console.error('[api] Generate error:', e.message)
-    return res.status(500).json({ error: e.message })
-  }
+  // Kembalikan info ke browser — BROWSER yang fetch CF Worker langsung
+  // Ini menghindari Vercel 504 timeout (batas 10 detik)
+  return res.json({
+    cfUrl,
+    prompt,
+    category,
+    gender,
+    seed,
+    quota: { used: q.used_neurons, budget: DAILY_BUDGET,
+      remaining: DAILY_BUDGET - q.used_neurons,
+      neuronsPerImage: NEURONS_PER_IMAGE,
+      estimatedPhotosLeft: Math.floor((DAILY_BUDGET - q.used_neurons) / NEURONS_PER_IMAGE) }
+  })
 }
 
-/** Upload foto manual (base64) — endpoint yang dipanggil frontend tapi sebelumnya belum ada file-nya */
+// Browser fetch CF Worker → dapat gambar → kirim base64 ke sini → upload Supabase
 async function handlePhotosSave(req, res, method) {
   if (method !== 'POST') return res.status(405).end()
   const { base64, category, gender, seed } = req.body || {}
   if (!base64 || !category || !gender) {
     return res.status(400).json({ error: 'base64, category, gender wajib' })
   }
-
   try {
     const buf = Buffer.from(base64, 'base64')
     if (buf.length < 1000) throw new Error('Gambar terlalu kecil')
-
     const filename = `${Date.now()}_${seed || Math.floor(Math.random() * 99999)}.jpg`
     const storagePath = `${category}/${gender}/${filename}`
     const { error: upErr } = await supabase.storage
-      .from('photos')
-      .upload(storagePath, buf, { contentType: 'image/jpeg', upsert: false })
+      .from('photos').upload(storagePath, buf, { contentType: 'image/jpeg', upsert: false })
     if (upErr) throw new Error('Upload storage: ' + upErr.message)
-
-    const {
-      data: { publicUrl },
-    } = supabase.storage.from('photos').getPublicUrl(storagePath)
-
+    const { data: { publicUrl } } = supabase.storage.from('photos').getPublicUrl(storagePath)
     const expiresAt = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString()
     await supabase.from('photos').insert({
-      category_id: category,
-      gender,
-      filename,
-      storage_path: storagePath,
-      url: publicUrl,
-      expires_at: expiresAt,
+      category_id: category, gender, filename,
+      storage_path: storagePath, url: publicUrl, expires_at: expiresAt,
     })
-
-    return res.json({ url: publicUrl, filename, ok: true })
+    // Catat quota setelah berhasil simpan
+    const quota = await addQuotaUsage(NEURONS_PER_IMAGE)
+    console.log('[api] ✅ Photo saved:', storagePath, '| Quota:', quota.used + '/' + quota.budget)
+    return res.json({ url: publicUrl, filename, quota, ok: true })
   } catch (e) {
     console.error('[api] photos/save error:', e.message)
     return res.status(500).json({ error: e.message })
@@ -526,7 +486,7 @@ async function handleAiChat(req, res, method) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
+        model: 'llama-3.3-70b-versatile',
         messages: [
           {
             role: 'system',
