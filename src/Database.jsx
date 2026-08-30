@@ -185,13 +185,42 @@ export default function Database({ onBack }) {
   const DELAY = 8000
   const generateOne = async (cat, gender, seed) => {
     const prompt = gender === "laki-laki" ? cat.promptMale : cat.promptFemale
-    const r = await fetch("/api/photos/generate", {
+
+    // Step 1: Vercel cek quota + kembalikan cfUrl (cepat, tidak timeout)
+    const r1 = await fetch("/api/photos/generate", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt, category: cat.id, gender, seed }),
     })
-    const data = await r.json()
+    const info = await r1.json()
+    if (info.error) throw new Error(info.error)
+    if (info.quota) setQuota(info.quota)
+
+    // Step 2: Browser fetch CF Worker langsung (bisa 30-60 detik, tidak ada batas Vercel)
+    const cfRes = await fetch(info.cfUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, seed }),
+    })
+    if (!cfRes.ok) {
+      const errText = await cfRes.text().catch(() => String(cfRes.status))
+      throw new Error("CF Worker HTTP " + cfRes.status + ": " + errText.slice(0, 100))
+    }
+
+    // Step 3: blob → base64 → upload ke Supabase via Vercel (cepat)
+    const blob = await cfRes.blob()
+    if (blob.size < 5000) throw new Error("Gambar terlalu kecil (" + blob.size + " bytes)")
+    const base64 = await new Promise(res => {
+      const reader = new FileReader()
+      reader.onload = e => res(e.target.result.split(",")[1])
+      reader.readAsDataURL(blob)
+    })
+    const r2 = await fetch("/api/photos/save", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base64, category: cat.id, gender, seed }),
+    })
+    const data = await r2.json()
     if (data.error) throw new Error(data.error)
-    if (data.quota) setQuota(q => ({ ...q, used: data.quota.used, remaining: Math.max(0, (q?.budget||10000) - data.quota.used) }))
+    if (data.quota) setQuota(data.quota)
     return data
   }
 
