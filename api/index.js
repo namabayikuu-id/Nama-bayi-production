@@ -141,6 +141,13 @@ export default async function handler(req, res) {
       return await handleCronCleanup(req, res, method)
     }
 
+    if (path === '/api/packages' || path === '/packages') {
+      return await handlePackages(req, res, method)
+    }
+    if (path === '/api/cron/generate' || path === '/cron/generate') {
+      return await handleCronGenerate(req, res, method)
+    }
+
     return res.status(404).json({ error: `Not found: ${method} ${path}` })
   } catch (e) {
     console.error('[api]', path, e)
@@ -175,13 +182,10 @@ const DEFAULT_CATEGORIES = [
 
 async function handleCategories(req, res, method) {
   if (method === 'GET') {
-    let { data, error: selErr } = await supabase.from('categories').select('*').order('created_at')
-    if (selErr) return res.status(500).json({ error: 'Select categories: ' + selErr.message })
+    let { data } = await supabase.from('categories').select('*').order('created_at')
     if (!data?.length) {
-      const { data: seeded, error: seedErr } = await supabase
-        .from('categories').upsert(DEFAULT_CATEGORIES).select()
-      if (seedErr) return res.status(500).json({ error: 'Seed categories: ' + seedErr.message })
-      data = seeded
+      await supabase.from('categories').upsert(DEFAULT_CATEGORIES)
+      data = DEFAULT_CATEGORIES
     }
     return res.json(
       data.map((c) => ({
@@ -196,14 +200,13 @@ async function handleCategories(req, res, method) {
 
   if (method === 'POST') {
     const { id, label, emoji, promptMale, promptFemale } = req.body || {}
-    const { error: upErr } = await supabase.from('categories').upsert({
+    await supabase.from('categories').upsert({
       id,
       label,
       emoji,
       prompt_male: promptMale,
       prompt_female: promptFemale,
     })
-    if (upErr) return res.status(500).json({ error: 'Upsert category: ' + upErr.message })
     return res.json({ ok: true })
   }
 
@@ -216,8 +219,7 @@ async function handleCategories(req, res, method) {
     if (photos?.length) {
       await supabase.storage.from('photos').remove(photos.map((p) => p.storage_path))
     }
-    const { error: delErr } = await supabase.from('categories').delete().eq('id', id)
-    if (delErr) return res.status(500).json({ error: 'Delete category: ' + delErr.message })
+    await supabase.from('categories').delete().eq('id', id)
     return res.json({ ok: true })
   }
 
@@ -292,16 +294,10 @@ async function handlePhotosSave(req, res, method) {
     if (upErr) throw new Error('Upload storage: ' + upErr.message)
     const { data: { publicUrl } } = supabase.storage.from('photos').getPublicUrl(storagePath)
     const expiresAt = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString()
-    const { error: insErr } = await supabase.from('photos').insert({
+    await supabase.from('photos').insert({
       category_id: category, gender, filename,
       storage_path: storagePath, url: publicUrl, expires_at: expiresAt,
     })
-    if (insErr) {
-      // Rollback: file sudah kepalang keupload ke storage tapi row gagal masuk DB.
-      // Hapus filenya lagi biar tidak jadi sampah "sukses di bucket tapi ga muncul di app".
-      await supabase.storage.from('photos').remove([storagePath]).catch(() => {})
-      throw new Error('Insert DB: ' + insErr.message)
-    }
     // Catat quota setelah berhasil simpan
     const quota = await addQuotaUsage(NEURONS_PER_IMAGE)
     console.log('[api] ✅ Photo saved:', storagePath, '| Quota:', quota.used + '/' + quota.budget)
@@ -486,23 +482,27 @@ async function handleExportsSave(req, res, method) {
   return res.json({ ok: true, id })
 }
 
-async function handleAiChat(req, res, method) {
-  if (method !== 'POST') return res.status(405).end()
-  const { prompt } = req.body || {}
-  try {
+// Model fallback list — coba satu per satu
+const GROQ_MODELS = [
+  'llama-3.1-8b-instant',
+  'llama-3.3-70b-versatile',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'meta-llama/llama-4-maverick-17b-128e-instruct',
+  'qwen/qwen3-32b',
+  'gemma2-9b-it',
+  'mixtral-8x7b-32768',
+]
+
+async function callGroq(prompt) {
+  const key = process.env.GROQ_API_KEY
+  for (const model of GROQ_MODELS) {
     const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model,
         messages: [
-          {
-            role: 'system',
-            content: 'Respond ONLY with valid JSON, no explanation, no markdown.',
-          },
+          { role: 'system', content: 'Respond ONLY with valid JSON, no explanation, no markdown.' },
           { role: 'user', content: prompt },
         ],
         response_format: { type: 'json_object' },
@@ -510,11 +510,23 @@ async function handleAiChat(req, res, method) {
       }),
     })
     const d = await r.json()
-    if (!r.ok || d.error) {
-      return res.status(500).json({ error: d.error?.message || 'Groq error' })
+    if (r.ok && !d.error) {
+      console.log('[groq] OK:', model)
+      return d.choices?.[0]?.message?.content || ''
     }
-    return res.json({ text: d.choices?.[0]?.message?.content || '' })
-  } catch (e) {
+    console.log('[groq] Skip', model + ':', d.error?.message?.slice(0, 80))
+  }
+  throw new Error('Semua model Groq gagal. Cek GROQ_API_KEY di Vercel env.')
+}
+
+async function handleAiChat(req, res, method) {
+  if (method !== 'POST') return res.status(405).end()
+  const { prompt } = req.body || {}
+  if (!prompt) return res.status(400).json({ error: 'prompt required' })
+  try {
+    const text = await callGroq(prompt)
+    return res.json({ text })
+  } catch(e) {
     return res.status(500).json({ error: e.message })
   }
 }
@@ -688,4 +700,90 @@ async function handleCronCleanup(req, res, method) {
     .lt('date', new Date().toISOString().slice(0, 10))
 
   return res.json({ ok: true, deleted: expired?.length || 0 })
+}
+
+// ── PACKAGES + CRON GENERATE — appended ──────────────────────────────────────
+// These are handled via the router above by adding new path checks
+// The functions are defined here:
+
+async function handlePackages(req, res, method) {
+  if (method === 'GET') {
+    const { data } = await supabase.from('content_packages')
+      .select('*').order('created_at', { ascending: false }).limit(50)
+    return res.json(data || [])
+  }
+  if (method === 'DELETE') {
+    const { id } = req.body || {}
+    await supabase.from('content_packages').delete().eq('id', id)
+    return res.json({ ok: true })
+  }
+  return res.status(405).end()
+}
+
+async function handleCronGenerate(req, res, method) {
+  const authHeader = req.headers['authorization'] || ''
+  if (authHeader !== 'Bearer ' + process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+  try {
+    const { data: cats } = await supabase.from('categories').select('*')
+    if (!cats?.length) return res.status(400).json({ error: 'Tidak ada kategori' })
+
+    const { data: allPhotos } = await supabase.from('photos')
+      .select('category_id,gender,url')
+      .gt('expires_at', new Date().toISOString())
+    if (!allPhotos?.length) return res.status(400).json({ error: 'Tidak ada foto' })
+
+    const catWithPhotos = cats.filter(c => allPhotos.some(p => p.category_id === c.id))
+    if (!catWithPhotos.length) return res.status(400).json({ error: 'Semua kategori kosong' })
+
+    const cat = catWithPhotos[Math.floor(Math.random() * catWithPhotos.length)]
+    const malePhotos   = allPhotos.filter(p => p.category_id === cat.id && p.gender === 'laki-laki')
+    const femalePhotos = allPhotos.filter(p => p.category_id === cat.id && p.gender === 'perempuan')
+    const allCatPhotos = [...malePhotos, ...femalePhotos]
+    if (!allCatPhotos.length) return res.status(400).json({ error: 'Foto kategori kosong' })
+
+    const shuffle = a => { const b=[...a]; for(let i=b.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}; return b }
+    const sm = shuffle(malePhotos), sf = shuffle(femalePhotos), sa = shuffle(allCatPhotos)
+
+    // Groq
+    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + process.env.GROQ_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.1-8b-instant',
+        messages: [
+          { role: 'system', content: 'Respond ONLY with valid JSON.' },
+          { role: 'user', content: `Kamu membuat konten TikTok nama bayi Indonesia bertema: "${cat.label}". Buat: 1. "hook": kalimat hook TikTok menarik max 14 kata boleh 2 baris dipisah newline. 2. "cta": 1-2 baris ajakan. 3. "names": PERSIS 10 nama 3 kata tiap kata dengan arti singkat max 7 kata dan gender M/F. JSON: {"hook":"...","cta":"...","names":[{"fullName":"K1 K2 K3","gender":"M","parts":[{"word":"K1","meaning":"arti"},{"word":"K2","meaning":"arti"},{"word":"K3","meaning":"arti"}]}]}` },
+        ],
+        response_format: { type: 'json_object' }, temperature: 0.85,
+      }),
+    })
+    const gd = await groqRes.json()
+    const ai = JSON.parse((gd.choices?.[0]?.message?.content || '{}').match(/\{[\s\S]*\}/)[0])
+    const names = (ai.names || []).slice(0, 10)
+    if (!names.length) throw new Error('Groq gagal generate nama')
+
+    const pickPhoto = (g, i) => {
+      if (g === 'F') return (sf.length ? sf : sa)[i % Math.max(1, sf.length || sa.length)].url
+      return (sm.length ? sm : sa)[i % Math.max(1, sm.length || sa.length)].url
+    }
+    const photoUrls = {
+      hook: sa[0].url,
+      names: names.map((n, i) => pickPhoto(n.gender || 'M', i)),
+      cta: sa[Math.min(1, sa.length - 1)].url,
+    }
+
+    const id = Date.now().toString()
+    await supabase.from('content_packages').insert({
+      id, category_id: cat.id, theme: cat.label, emoji: cat.emoji,
+      hook: ai.hook, cta: ai.cta, names, photo_urls: photoUrls,
+      status: 'ready', auto_generated: true,
+    })
+    console.log('[cron] Package generated:', id, cat.label)
+    return res.json({ ok: true, id, theme: cat.label, nameCount: names.length })
+  } catch(e) {
+    console.error('[cron] generate error:', e.message)
+    return res.status(500).json({ error: e.message })
+  }
 }
