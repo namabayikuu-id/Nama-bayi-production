@@ -111,6 +111,7 @@ function drawContent(ctx, type, data, S) {
 function loadImgFromUrl(url) {
   return new Promise(resolve => {
     const img = new Image();
+    img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = url;
