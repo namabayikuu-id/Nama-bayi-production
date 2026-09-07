@@ -73,7 +73,7 @@ async function callGroq(prompt) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
+      model: 'llama-3.1-8b-instant',
       messages: [
         { role: 'system', content: 'Respond ONLY with valid JSON, no explanation, no markdown.' },
         { role: 'user', content: prompt },

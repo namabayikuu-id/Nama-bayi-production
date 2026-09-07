@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import History from "./History.jsx";
 import "./App.css";
 import Database from "./Database";
 
@@ -110,7 +111,6 @@ function drawContent(ctx, type, data, S) {
 function loadImgFromUrl(url) {
   return new Promise(resolve => {
     const img = new Image();
-    img.crossOrigin = 'anonymous';  // wajib agar canvas tidak tainted
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = url;
@@ -132,14 +132,15 @@ async function renderFrame(type, data, bgImg) {
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [page, setPage]         = useState("main"); // "main" | "database"
+  const [page, setPage] = useState("main"); // "main" | "database" | "history"
 
   if (page === "database") return <Database onBack={() => setPage("main")} />;
+  if (page === "history")  return <History  onBack={() => setPage("main")} />;
 
-  return <MainPage onGoToDb={() => setPage("database")} />;
+  return <MainPage onGoToDb={() => setPage("database")} onGoToHistory={() => setPage("history")} />;
 }
 
-function MainPage({ onGoToDb }) {
+function MainPage({ onGoToDb, onGoToHistory }) {
   const [step, setStep]         = useState(1);
   const [dbPhotos, setDbPhotos] = useState({ male:[], female:[], all:[] });
   const [inputMode, setMode]    = useState("ai");
@@ -740,14 +741,21 @@ Balas HANYA JSON valid, tanpa penjelasan:
               <div className="header-sub">AI · 12 Foto Instagram 1:1 · Export ZIP</div>
             </div>
           </div>
-          <div className="steps">
-            {["Config","Preview"].map((s,i)=>(
-              <div key={i} className="steps-row">
-                {i>0 && <div className="step-line"/>}
-                <div className={`step-badge ${step===i+1?"active":step>i+1?"done":""}`}>{step>i+1?"✓":i+1}</div>
-                <span className={`step-label ${step===i+1?"active":""}`}>{s}</span>
-              </div>
-            ))}
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <button onClick={onGoToHistory} style={{
+              background:"#2a2520",border:"none",color:"#c9a96e",padding:"7px 14px",
+              borderRadius:10,cursor:"pointer",fontSize:13,fontWeight:600,
+              fontFamily:"'DM Sans',sans-serif",
+            }}>📋 Histori</button>
+            <div className="steps">
+              {["Config","Preview"].map((s,i)=>(
+                <div key={i} className="steps-row">
+                  {i>0 && <div className="step-line"/>}
+                  <div className={`step-badge ${step===i+1?"active":step>i+1?"done":""}`}>{step>i+1?"✓":i+1}</div>
+                  <span className={`step-label ${step===i+1?"active":""}`}>{s}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </header>
