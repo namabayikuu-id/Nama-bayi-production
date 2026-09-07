@@ -484,13 +484,9 @@ async function handleExportsSave(req, res, method) {
 
 // Model fallback list — coba satu per satu
 const GROQ_MODELS = [
-  'llama-3.1-8b-instant',
-  'llama-3.3-70b-versatile',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'meta-llama/llama-4-maverick-17b-128e-instruct',
-  'qwen/qwen3-32b',
-  'gemma2-9b-it',
-  'mixtral-8x7b-32768',
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.6-27b',
 ]
 
 async function callGroq(prompt) {
