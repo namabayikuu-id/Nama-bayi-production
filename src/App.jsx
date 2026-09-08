@@ -154,6 +154,7 @@ function MainPage({ onGoToDb, onGoToHistory }) {
   const [progress, setProgress] = useState("");
   const [namesData, setNames]   = useState([]);
   const [frameUrls, setFrames]  = useState([]);
+  const [sourcePhotoUrls, setSourcePhotoUrls] = useState({ hook: null, names: [], cta: null });
   const [JsZip, setJsZip]       = useState(null);
   const [aiStatus, setAiStatus] = useState(null); // null | "ok" | "no-key"
 
@@ -228,6 +229,28 @@ function MainPage({ onGoToDb, onGoToHistory }) {
       }
     }).catch(()=>{})
   }, [])
+
+  const [isSavingHistory, setIsSavingHistory] = useState(false);
+  const saveToHistory = async () => {
+    if (!frameUrls.length) { alert('Generate konten dulu!'); return }
+    setIsSavingHistory(true)
+    try {
+      const catLabel = folderMode !== "auto" ? categories.find(c => c.id === folderMode)?.label : null
+      const r = await fetch('/api/packages', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          theme: catLabel || 'Manual',
+          category_id: folderMode !== "auto" ? folderMode : null,
+          hook: hookText, cta: ctaText, names: namesData,
+          photo_urls: sourcePhotoUrls,
+        })
+      })
+      const d = await r.json()
+      if (d.ok) alert('✅ Tersimpan ke Histori!')
+      else throw new Error(d.error)
+    } catch (e) { alert('Error simpan histori: ' + e.message) }
+    finally { setIsSavingHistory(false) }
+  }
 
   const scheduleForTikTok = async () => {
     if (!frameUrls.length) { alert('Generate konten dulu!'); return }
@@ -336,30 +359,32 @@ Return ONLY valid JSON:
         return malePool.length ? malePool : allPool;
       };
 
-      const getPhoto = async (nameGender, idx) => {
-        const pool = pickPool(nameGender);
-        return loadImgFromUrl(pool[idx % pool.length].url);
-      };
-
       const gLabel = gender==="laki"?"👦":gender==="perempuan"?"👧":"🌟";
       setProgress(`📁 ${folderLabel} · ${gLabel} ${allPool.length} foto tersedia · Render...`);
 
       const urls = [];
       const hookPool = gender === "umum" ? allPool : pickPool(gender === "laki" ? "M" : "F");
-      urls.push(await renderFrame("hook", { text: hookText }, await loadImgFromUrl(hookPool[0 % hookPool.length].url)));
+      const hookUrl = hookPool[0 % hookPool.length].url;
+      urls.push(await renderFrame("hook", { text: hookText }, await loadImgFromUrl(hookUrl)));
 
+      const nameUrls = [];
       for (let i = 0; i < finalNames.length; i++) {
         const nameG = finalNames[i].gender || (gender === "perempuan" ? "F" : "M");
+        const pool = pickPool(nameG);
+        const photoUrl = pool[i % pool.length].url;
+        nameUrls.push(photoUrl);
         urls.push(await renderFrame("main", {
           ...finalNames[i],
           combined: combineMeaning(finalNames[i].parts),
-        }, await getPhoto(nameG, i)));
+        }, await loadImgFromUrl(photoUrl)));
       }
 
       const ctaPool = hookPool;
-      urls.push(await renderFrame("cta", { text: ctaText }, await loadImgFromUrl(ctaPool[1 % ctaPool.length].url)));
+      const ctaUrl = ctaPool[1 % ctaPool.length].url;
+      urls.push(await renderFrame("cta", { text: ctaText }, await loadImgFromUrl(ctaUrl)));
 
       setFrames(urls);
+      setSourcePhotoUrls({ hook: hookUrl, names: nameUrls, cta: ctaUrl });
       if (!autoMode) setStep(2);
       return { urls, names: finalNames };
     } catch (err) {
@@ -743,6 +768,11 @@ Balas HANYA JSON valid, tanpa penjelasan:
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <button onClick={onGoToHistory} style={{
+              background:"#2a2520",border:"none",color:"#c9a96e",padding:"7px 14px",
+              borderRadius:10,cursor:"pointer",fontSize:13,fontWeight:600,
+              fontFamily:"'DM Sans',sans-serif",
+            }}>📋 Histori</button>
             <div className="steps">
               {["Config","Preview"].map((s,i)=>(
                 <div key={i} className="steps-row">
@@ -1060,15 +1090,22 @@ Balas HANYA JSON valid, tanpa penjelasan:
               </div>
             )}
 
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10}}>
               <button className="btn-secondary" onClick={()=>setStep(1)}>← Edit</button>
               <button className="btn-export" onClick={exportZip} disabled={isLoading}>
                 {isLoading ? <span className="loading-row"><span className="spinner"/>{progress}</span> : "📦 ZIP"}
+              </button>
+              <button onClick={saveToHistory} disabled={isSavingHistory}
+                style={{padding:'15px 0',borderRadius:16,border:'none',background:'#2a2520',color:'#c9a96e',fontWeight:700,fontSize:13,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                {isSavingHistory ? <><span className="spinner" style={{borderTopColor:'#c9a96e'}}/> Saving...</> : '💾 Simpan Histori'}
               </button>
               <button onClick={scheduleForTikTok} disabled={isSaving}
                 style={{padding:'15px 0',borderRadius:16,border:'none',background:'linear-gradient(135deg,#000,#333)',color:'#fff',fontWeight:700,fontSize:13,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
                 {isSaving ? <><span className="spinner" style={{borderTopColor:'#fff'}}/> Saving...</> : '📅 Jadwalkan'}
               </button>
+            </div>
+            <div style={{textAlign:'center',fontSize:12,color:'#9a9080',marginTop:-4}}>
+              💡 Klik salah satu foto di atas untuk download satu per satu
             </div>
           </div>
         )}
