@@ -8,8 +8,8 @@
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "crons": [
-    { "path": "/api/index", "schedule": "0 0 * * *" },
-    { "path": "/api/index", "schedule": "0 8 * * *" }
+    { "path": "/api/cron/cleanup", "schedule": "0 0 * * *" },
+    { "path": "/api/cron/generate", "schedule": "0 8 * * *" }
   ],
   "functions": {
     "api/index.js": { "includeFiles": "lib/**" }
