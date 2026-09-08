@@ -708,6 +708,18 @@ async function handlePackages(req, res, method) {
       .select('*').order('created_at', { ascending: false }).limit(50)
     return res.json(data || [])
   }
+  if (method === 'POST') {
+    const { theme, emoji, category_id, hook, cta, names, photo_urls } = req.body || {}
+    if (!names?.length) return res.status(400).json({ error: 'names kosong' })
+    const id = Date.now().toString()
+    const { error } = await supabase.from('content_packages').insert({
+      id, category_id: category_id || null, theme: theme || 'Manual',
+      emoji: emoji || '🍼', hook, cta, names, photo_urls,
+      status: 'ready', auto_generated: false,
+    })
+    if (error) return res.status(500).json({ error: error.message })
+    return res.json({ ok: true, id })
+  }
   if (method === 'DELETE') {
     const { id } = req.body || {}
     await supabase.from('content_packages').delete().eq('id', id)
@@ -747,7 +759,7 @@ async function handleCronGenerate(req, res, method) {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + process.env.GROQ_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.1-8b-instant',
+        model: 'openai/gpt-oss-120b',
         messages: [
           { role: 'system', content: 'Respond ONLY with valid JSON.' },
           { role: 'user', content: `Kamu membuat konten TikTok nama bayi Indonesia bertema: "${cat.label}". Buat: 1. "hook": kalimat hook TikTok menarik max 14 kata boleh 2 baris dipisah newline. 2. "cta": 1-2 baris ajakan. 3. "names": PERSIS 10 nama 3 kata tiap kata dengan arti singkat max 7 kata dan gender M/F. JSON: {"hook":"...","cta":"...","names":[{"fullName":"K1 K2 K3","gender":"M","parts":[{"word":"K1","meaning":"arti"},{"word":"K2","meaning":"arti"},{"word":"K3","meaning":"arti"}]}]}` },
