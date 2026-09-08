@@ -743,11 +743,6 @@ Balas HANYA JSON valid, tanpa penjelasan:
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:12}}>
-            <button onClick={onGoToHistory} style={{
-              background:"#2a2520",border:"none",color:"#c9a96e",padding:"7px 14px",
-              borderRadius:10,cursor:"pointer",fontSize:13,fontWeight:600,
-              fontFamily:"'DM Sans',sans-serif",
-            }}>📋 Histori</button>
             <div className="steps">
               {["Config","Preview"].map((s,i)=>(
                 <div key={i} className="steps-row">
