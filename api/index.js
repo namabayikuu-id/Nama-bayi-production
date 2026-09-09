@@ -140,6 +140,9 @@ export default async function handler(req, res) {
     if (path === '/cron/cleanup') {
       return await handleCronCleanup(req, res, method)
     }
+    if (path === '/cron/photos') {
+      return await handleCronPhotos(req, res, method)
+    }
 
     if (path === '/api/packages' || path === '/packages') {
       return await handlePackages(req, res, method)
@@ -728,6 +731,151 @@ async function handlePackages(req, res, method) {
   return res.status(405).end()
 }
 
+// ── Generate 1 foto langsung dari server (dipakai cron, tanpa lewat browser) ──
+async function generatePhotoServerSide(categoryId, gender, prompt, seed) {
+  const cfUrl = process.env.CF_WORKER_URL
+  if (!cfUrl) throw new Error('CF_WORKER_URL belum diset')
+
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), 60000)
+  let cfRes
+  try {
+    cfRes = await fetch(cfUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, seed }), signal: ctrl.signal,
+    })
+  } finally { clearTimeout(t) }
+  if (!cfRes.ok) throw new Error('Cloudflare Worker HTTP ' + cfRes.status)
+
+  const buf = Buffer.from(await cfRes.arrayBuffer())
+  if (buf.length < 5000) throw new Error('Gambar terlalu kecil / gagal generate')
+
+  const filename = `${Date.now()}_${seed}.jpg`
+  const storagePath = `${categoryId}/${gender}/${filename}`
+  const { error: upErr } = await supabase.storage.from('photos')
+    .upload(storagePath, buf, { contentType: 'image/jpeg', upsert: false })
+  if (upErr) throw new Error('Upload storage: ' + upErr.message)
+
+  const { data: { publicUrl } } = supabase.storage.from('photos').getPublicUrl(storagePath)
+  const expiresAt = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString()
+  await supabase.from('photos').insert({
+    category_id: categoryId, gender, filename, storage_path: storagePath, url: publicUrl, expires_at: expiresAt,
+  })
+  await addQuotaUsage(NEURONS_PER_IMAGE)
+  return publicUrl
+}
+
+// ── AI menciptakan 1 tema/folder baru yang belum pernah ada ───────────────────
+async function spawnNewCategory(existingLabels) {
+  const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + process.env.GROQ_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'openai/gpt-oss-120b',
+      messages: [
+        { role: 'system', content: 'Respond ONLY with valid JSON.' },
+        { role: 'user', content: `Kamu membuat folder tema baru untuk konten TikTok foto & nama bayi. Tema yang SUDAH ADA: ${existingLabels.join(', ') || '(belum ada)'}.
+Ciptakan SATU tema folder baru yang BERBEDA dari semua tema di atas — bisa budaya/negara lain (misal Jepang, Korea, India, Skandinavia), atau gaya visual (vintage, modern minimalis, klasik kerajaan, dsb).
+Balas HANYA JSON:
+{"id":"slug-singkat-tanpa-spasi","label":"Nama Tema","emoji":"🌸","prompt_male":"prompt foto AI (Bahasa Inggris) untuk bayi laki-laki bertema ini, gaya visual detail, foto potret profesional","prompt_female":"prompt foto AI (Bahasa Inggris) untuk bayi perempuan bertema ini, gaya visual detail, foto potret profesional"}` },
+      ],
+      response_format: { type: 'json_object' }, temperature: 1.0,
+    }),
+  })
+  const gd = await groqRes.json()
+  const idea = JSON.parse((gd.choices?.[0]?.message?.content || '{}').match(/\{[\s\S]*\}/)[0])
+  if (!idea.id || !idea.label || !idea.prompt_male || !idea.prompt_female) throw new Error('AI gagal membuat tema baru')
+  idea.id = String(idea.id).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || ('tema-' + Date.now())
+  return idea
+}
+
+// ── Cron harian: top-up stok foto + spawn tema baru kalau syarat terpenuhi ───
+async function handleCronPhotos(req, res, method) {
+  const authHeader = req.headers['authorization'] || ''
+  if (authHeader !== 'Bearer ' + process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  const TARGET_PER_GENDER = 8   // stok minimum foto per gender per kategori
+  const MAX_PER_RUN = 14        // batas foto per eksekusi (jaga durasi & kuota)
+  const startedAt = Date.now()
+
+  try {
+    // 1. Spawn tema baru setiap kelipatan 20 total generate (sekali per kelipatan)
+    const { data: cfg } = await supabase.from('schedule_config')
+      .select('total_generations,last_spawned_at_count').eq('id', 1).single()
+    const totalGen = cfg?.total_generations || 0
+    const lastSpawnedAt = cfg?.last_spawned_at_count || 0
+    let spawnedLabel = null
+
+    if (totalGen > 0 && totalGen % 20 === 0 && totalGen !== lastSpawnedAt) {
+      try {
+        const { data: existingCats } = await supabase.from('categories').select('label')
+        const idea = await spawnNewCategory((existingCats || []).map(c => c.label))
+        let newId = idea.id
+        const { data: clash } = await supabase.from('categories').select('id').eq('id', newId).maybeSingle()
+        if (clash) newId = newId + '-' + Math.floor(Math.random() * 1000)
+        await supabase.from('categories').insert({
+          id: newId, label: idea.label, emoji: idea.emoji || '🍼',
+          prompt_male: idea.prompt_male, prompt_female: idea.prompt_female,
+          usage_count: 0,
+        })
+        await supabase.from('schedule_config').update({ last_spawned_at_count: totalGen }).eq('id', 1)
+        spawnedLabel = idea.label
+        console.log('[cron] New category spawned:', newId, idea.label)
+      } catch (e) {
+        console.error('[cron] spawn category failed:', e.message)
+      }
+    }
+
+    // 2. Hitung kekurangan stok tiap kategori × gender
+    const { data: cats } = await supabase.from('categories').select('*')
+    if (!cats?.length) return res.json({ ok: true, generated: 0, note: 'Tidak ada kategori' })
+
+    const { data: allPhotos } = await supabase.from('photos')
+      .select('category_id,gender').gt('expires_at', new Date().toISOString())
+    const countOf = (catId, gender) => (allPhotos || []).filter(p => p.category_id === catId && p.gender === gender).length
+
+    const needs = []
+    for (const cat of cats) {
+      for (const gender of ['laki-laki', 'perempuan']) {
+        const prompt = gender === 'laki-laki' ? cat.prompt_male : cat.prompt_female
+        if (!prompt) continue
+        const have = countOf(cat.id, gender)
+        if (have < TARGET_PER_GENDER) needs.push({ cat, gender, prompt, deficit: TARGET_PER_GENDER - have })
+      }
+    }
+    needs.sort((a, b) => b.deficit - a.deficit) // kategori paling kosong duluan
+
+    // 3. Generate sesuai kuota, batas per-run, dan sisa waktu eksekusi
+    let generated = 0, failed = 0
+    const q0 = await getQuota()
+    let remaining = DAILY_BUDGET - q0.used_neurons
+
+    outer: for (const need of needs) {
+      for (let i = 0; i < need.deficit; i++) {
+        if (generated >= MAX_PER_RUN) break outer
+        if (remaining < NEURONS_PER_IMAGE) break outer
+        if (Date.now() - startedAt > 260000) break outer // sisakan buffer dari batas 300s
+        try {
+          const seed = Math.floor(Math.random() * 99999)
+          await generatePhotoServerSide(need.cat.id, need.gender, need.prompt, seed)
+          generated++
+          remaining -= NEURONS_PER_IMAGE
+        } catch (e) {
+          failed++
+          console.error('[cron] photo gen failed:', need.cat.id, need.gender, e.message)
+        }
+      }
+    }
+
+    console.log(`[cron] Photos: ${generated} generated, ${failed} failed${spawnedLabel ? `, spawned "${spawnedLabel}"` : ''}`)
+    return res.json({ ok: true, generated, failed, spawnedCategory: spawnedLabel })
+  } catch (e) {
+    console.error('[cron] photos error:', e.message)
+    return res.status(500).json({ error: e.message })
+  }
+}
 async function handleCronGenerate(req, res, method) {
   const authHeader = req.headers['authorization'] || ''
   if (authHeader !== 'Bearer ' + process.env.CRON_SECRET) {
@@ -742,19 +890,32 @@ async function handleCronGenerate(req, res, method) {
       .gt('expires_at', new Date().toISOString())
     if (!allPhotos?.length) return res.status(400).json({ error: 'Tidak ada foto' })
 
-    const catWithPhotos = cats.filter(c => allPhotos.some(p => p.category_id === c.id))
+    // ── Tentukan gender target hari ini (selang-seling dari hari sebelumnya) ──
+    const { data: cfg } = await supabase.from('schedule_config')
+      .select('last_gender,total_generations').eq('id', 1).single()
+    const prevGender = cfg?.last_gender === 'laki-laki' ? 'laki-laki' : 'perempuan'
+    const targetGender = prevGender === 'laki-laki' ? 'perempuan' : 'laki-laki'
+    const genderCode = targetGender === 'laki-laki' ? 'M' : 'F'
+
+    // ── Pilih kategori: yang punya foto gender target, paling jarang dipakai ──
+    let catWithPhotos = cats.filter(c => allPhotos.some(p => p.category_id === c.id && p.gender === targetGender))
+    if (!catWithPhotos.length) catWithPhotos = cats.filter(c => allPhotos.some(p => p.category_id === c.id))
     if (!catWithPhotos.length) return res.status(400).json({ error: 'Semua kategori kosong' })
 
-    const cat = catWithPhotos[Math.floor(Math.random() * catWithPhotos.length)]
-    const malePhotos   = allPhotos.filter(p => p.category_id === cat.id && p.gender === 'laki-laki')
-    const femalePhotos = allPhotos.filter(p => p.category_id === cat.id && p.gender === 'perempuan')
-    const allCatPhotos = [...malePhotos, ...femalePhotos]
-    if (!allCatPhotos.length) return res.status(400).json({ error: 'Foto kategori kosong' })
+    const minUsage = Math.min(...catWithPhotos.map(c => c.usage_count || 0))
+    const leastUsed = catWithPhotos.filter(c => (c.usage_count || 0) === minUsage)
+    const cat = leastUsed[Math.floor(Math.random() * leastUsed.length)]
+
+    const genderPhotos = allPhotos.filter(p => p.category_id === cat.id && p.gender === targetGender)
+    const allCatPhotos = allPhotos.filter(p => p.category_id === cat.id)
+    const pool = genderPhotos.length ? genderPhotos : allCatPhotos
+    if (!pool.length) return res.status(400).json({ error: 'Foto kategori kosong' })
 
     const shuffle = a => { const b=[...a]; for(let i=b.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}; return b }
-    const sm = shuffle(malePhotos), sf = shuffle(femalePhotos), sa = shuffle(allCatPhotos)
+    const shuffled = shuffle(pool)
 
-    // Groq
+    // ── Groq: AI pilih sudut tema variatif, semua nama gender target ──────────
+    const genderLabel = targetGender === 'laki-laki' ? 'laki-laki (boy)' : 'perempuan (girl)'
     const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + process.env.GROQ_API_KEY, 'Content-Type': 'application/json' },
@@ -762,9 +923,17 @@ async function handleCronGenerate(req, res, method) {
         model: 'openai/gpt-oss-120b',
         messages: [
           { role: 'system', content: 'Respond ONLY with valid JSON.' },
-          { role: 'user', content: `Kamu membuat konten TikTok nama bayi Indonesia bertema: "${cat.label}". Buat: 1. "hook": kalimat hook TikTok menarik max 14 kata boleh 2 baris dipisah newline. 2. "cta": 1-2 baris ajakan. 3. "names": PERSIS 10 nama 3 kata tiap kata dengan arti singkat max 7 kata dan gender M/F. JSON: {"hook":"...","cta":"...","names":[{"fullName":"K1 K2 K3","gender":"M","parts":[{"word":"K1","meaning":"arti"},{"word":"K2","meaning":"arti"},{"word":"K3","meaning":"arti"}]}]}` },
+          { role: 'user', content: `Kamu membuat konten TikTok nama bayi Indonesia. Folder foto yang dipakai hari ini bergaya visual: "${cat.label}".
+Semua 10 nama HARUS untuk bayi ${genderLabel} (gender "${genderCode}" untuk SEMUA nama, karena foto yang tersedia hari ini foto bayi ${genderLabel}).
+Pilih SATU sudut tema/angle menarik & variatif yang cocok dengan gaya visual folder "${cat.label}" (misal kalau foldernya "Eropa" bisa angle "nama terinspirasi Jerman", "nama vintage Eropa", "nama modern Skandinavia" — pilih angle berbeda tiap kali, jangan generik/itu-itu saja).
+Buat:
+1. "theme_angle": nama angle yang kamu pilih (singkat, misal "Nama Terinspirasi Jerman")
+2. "hook": kalimat hook TikTok menarik max 14 kata sesuai angle, boleh 2 baris dipisah newline.
+3. "cta": 1-2 baris ajakan sesuai angle.
+4. "names": PERSIS 10 nama 3 kata sesuai angle, SEMUA gender "${genderCode}", tiap kata dengan arti singkat max 7 kata.
+Balas HANYA JSON: {"theme_angle":"...","hook":"...","cta":"...","names":[{"fullName":"K1 K2 K3","gender":"${genderCode}","parts":[{"word":"K1","meaning":"arti"},{"word":"K2","meaning":"arti"},{"word":"K3","meaning":"arti"}]}]}` },
         ],
-        response_format: { type: 'json_object' }, temperature: 0.85,
+        response_format: { type: 'json_object' }, temperature: 0.9,
       }),
     })
     const gd = await groqRes.json()
@@ -772,24 +941,31 @@ async function handleCronGenerate(req, res, method) {
     const names = (ai.names || []).slice(0, 10)
     if (!names.length) throw new Error('Groq gagal generate nama')
 
-    const pickPhoto = (g, i) => {
-      if (g === 'F') return (sf.length ? sf : sa)[i % Math.max(1, sf.length || sa.length)].url
-      return (sm.length ? sm : sa)[i % Math.max(1, sm.length || sa.length)].url
-    }
     const photoUrls = {
-      hook: sa[0].url,
-      names: names.map((n, i) => pickPhoto(n.gender || 'M', i)),
-      cta: sa[Math.min(1, sa.length - 1)].url,
+      hook: shuffled[0].url,
+      names: names.map((n, i) => shuffled[i % shuffled.length].url),
+      cta: shuffled[Math.min(1, shuffled.length - 1)].url,
     }
 
     const id = Date.now().toString()
     await supabase.from('content_packages').insert({
-      id, category_id: cat.id, theme: cat.label, emoji: cat.emoji,
+      id, category_id: cat.id, theme: ai.theme_angle || cat.label, emoji: cat.emoji,
       hook: ai.hook, cta: ai.cta, names, photo_urls: photoUrls,
       status: 'ready', auto_generated: true,
     })
-    console.log('[cron] Package generated:', id, cat.label)
-    return res.json({ ok: true, id, theme: cat.label, nameCount: names.length })
+
+    // ── Catat pemakaian kategori + gender untuk giliran selanjutnya ───────────
+    await supabase.from('categories').update({
+      usage_count: (cat.usage_count || 0) + 1,
+      last_used_at: new Date().toISOString(),
+    }).eq('id', cat.id)
+    await supabase.from('schedule_config').update({
+      last_gender: targetGender,
+      total_generations: (cfg?.total_generations || 0) + 1,
+    }).eq('id', 1)
+
+    console.log('[cron] Package generated:', id, cat.label, '·', ai.theme_angle, '·', targetGender)
+    return res.json({ ok: true, id, theme: ai.theme_angle || cat.label, category: cat.label, gender: targetGender, nameCount: names.length })
   } catch(e) {
     console.error('[cron] generate error:', e.message)
     return res.status(500).json({ error: e.message })
