@@ -796,45 +796,23 @@ async function handleCronPhotos(req, res, method) {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 
-  const TARGET_PER_GENDER = 8   // stok minimum foto per gender per kategori
-  const MAX_PER_RUN = 14        // batas foto per eksekusi (jaga durasi & kuota)
+  const TARGET_PER_GENDER = 20  // stok target per gender per kategori (total 40/tema)
+  const MAX_PER_RUN = 30        // batas foto per eksekusi (jaga durasi & kuota)
   const startedAt = Date.now()
 
   try {
-    // 1. Spawn tema baru setiap kelipatan 20 total generate (sekali per kelipatan)
-    const { data: cfg } = await supabase.from('schedule_config')
-      .select('total_generations,last_spawned_at_count').eq('id', 1).single()
-    const totalGen = cfg?.total_generations || 0
-    const lastSpawnedAt = cfg?.last_spawned_at_count || 0
-    let spawnedLabel = null
-
-    if (totalGen > 0 && totalGen % 20 === 0 && totalGen !== lastSpawnedAt) {
-      try {
-        const { data: existingCats } = await supabase.from('categories').select('label')
-        const idea = await spawnNewCategory((existingCats || []).map(c => c.label))
-        let newId = idea.id
-        const { data: clash } = await supabase.from('categories').select('id').eq('id', newId).maybeSingle()
-        if (clash) newId = newId + '-' + Math.floor(Math.random() * 1000)
-        await supabase.from('categories').insert({
-          id: newId, label: idea.label, emoji: idea.emoji || '🍼',
-          prompt_male: idea.prompt_male, prompt_female: idea.prompt_female,
-          usage_count: 0,
-        })
-        await supabase.from('schedule_config').update({ last_spawned_at_count: totalGen }).eq('id', 1)
-        spawnedLabel = idea.label
-        console.log('[cron] New category spawned:', newId, idea.label)
-      } catch (e) {
-        console.error('[cron] spawn category failed:', e.message)
-      }
-    }
-
-    // 2. Hitung kekurangan stok tiap kategori × gender
+    // 1. Hitung stok saat ini per kategori × gender
     const { data: cats } = await supabase.from('categories').select('*')
     if (!cats?.length) return res.json({ ok: true, generated: 0, note: 'Tidak ada kategori' })
 
     const { data: allPhotos } = await supabase.from('photos')
       .select('category_id,gender').gt('expires_at', new Date().toISOString())
-    const countOf = (catId, gender) => (allPhotos || []).filter(p => p.category_id === catId && p.gender === gender).length
+    const countMap = {}
+    for (const p of (allPhotos || [])) {
+      const k = p.category_id + '|' + p.gender
+      countMap[k] = (countMap[k] || 0) + 1
+    }
+    const countOf = (catId, gender) => countMap[catId + '|' + gender] || 0
 
     const needs = []
     for (const cat of cats) {
@@ -847,7 +825,7 @@ async function handleCronPhotos(req, res, method) {
     }
     needs.sort((a, b) => b.deficit - a.deficit) // kategori paling kosong duluan
 
-    // 3. Generate sesuai kuota, batas per-run, dan sisa waktu eksekusi
+    // 2. Generate sesuai kuota, batas per-run, dan sisa waktu eksekusi
     let generated = 0, failed = 0
     const q0 = await getQuota()
     let remaining = DAILY_BUDGET - q0.used_neurons
@@ -862,10 +840,37 @@ async function handleCronPhotos(req, res, method) {
           await generatePhotoServerSide(need.cat.id, need.gender, need.prompt, seed)
           generated++
           remaining -= NEURONS_PER_IMAGE
+          countMap[need.cat.id + '|' + need.gender] = (countMap[need.cat.id + '|' + need.gender] || 0) + 1
         } catch (e) {
           failed++
           console.error('[cron] photo gen failed:', need.cat.id, need.gender, e.message)
         }
+      }
+    }
+
+    // 3. Kalau ada kategori yang baru saja lengkap (≥20/gender) & belum pernah memicu spawn → buat tema baru
+    let spawnedLabel = null
+    const freshlyFull = cats.find(c =>
+      !c.spawned_next &&
+      countOf(c.id, 'laki-laki') >= TARGET_PER_GENDER &&
+      countOf(c.id, 'perempuan') >= TARGET_PER_GENDER
+    )
+    if (freshlyFull) {
+      try {
+        const idea = await spawnNewCategory(cats.map(c => c.label))
+        let newId = idea.id
+        const { data: clash } = await supabase.from('categories').select('id').eq('id', newId).maybeSingle()
+        if (clash) newId = newId + '-' + Math.floor(Math.random() * 1000)
+        await supabase.from('categories').insert({
+          id: newId, label: idea.label, emoji: idea.emoji || '🍼',
+          prompt_male: idea.prompt_male, prompt_female: idea.prompt_female,
+          usage_count: 0, spawned_next: false,
+        })
+        await supabase.from('categories').update({ spawned_next: true }).eq('id', freshlyFull.id)
+        spawnedLabel = idea.label
+        console.log('[cron] Kategori penuh:', freshlyFull.label, '→ tema baru dibuat:', newId, idea.label)
+      } catch (e) {
+        console.error('[cron] spawn category failed:', e.message)
       }
     }
 
@@ -883,12 +888,12 @@ async function handleCronGenerate(req, res, method) {
   }
   try {
     const { data: cats } = await supabase.from('categories').select('*')
-    if (!cats?.length) return res.status(400).json({ error: 'Tidak ada kategori' })
+    if (!cats?.length) { console.log('[cron] generate skip: tidak ada kategori'); return res.json({ ok: true, skipped: true, reason: 'Tidak ada kategori' }) }
 
     const { data: allPhotos } = await supabase.from('photos')
       .select('category_id,gender,url')
       .gt('expires_at', new Date().toISOString())
-    if (!allPhotos?.length) return res.status(400).json({ error: 'Tidak ada foto' })
+    if (!allPhotos?.length) { console.log('[cron] generate skip: tidak ada foto'); return res.json({ ok: true, skipped: true, reason: 'Tidak ada foto — tunggu cron photos jalan dulu' }) }
 
     // ── Tentukan gender target hari ini (selang-seling dari hari sebelumnya) ──
     const { data: cfg } = await supabase.from('schedule_config')
@@ -900,7 +905,7 @@ async function handleCronGenerate(req, res, method) {
     // ── Pilih kategori: yang punya foto gender target, paling jarang dipakai ──
     let catWithPhotos = cats.filter(c => allPhotos.some(p => p.category_id === c.id && p.gender === targetGender))
     if (!catWithPhotos.length) catWithPhotos = cats.filter(c => allPhotos.some(p => p.category_id === c.id))
-    if (!catWithPhotos.length) return res.status(400).json({ error: 'Semua kategori kosong' })
+    if (!catWithPhotos.length) { console.log('[cron] generate skip: semua kategori kosong'); return res.json({ ok: true, skipped: true, reason: 'Semua kategori kosong' }) }
 
     const minUsage = Math.min(...catWithPhotos.map(c => c.usage_count || 0))
     const leastUsed = catWithPhotos.filter(c => (c.usage_count || 0) === minUsage)
@@ -909,7 +914,7 @@ async function handleCronGenerate(req, res, method) {
     const genderPhotos = allPhotos.filter(p => p.category_id === cat.id && p.gender === targetGender)
     const allCatPhotos = allPhotos.filter(p => p.category_id === cat.id)
     const pool = genderPhotos.length ? genderPhotos : allCatPhotos
-    if (!pool.length) return res.status(400).json({ error: 'Foto kategori kosong' })
+    if (!pool.length) { console.log('[cron] generate skip: foto kategori kosong'); return res.json({ ok: true, skipped: true, reason: 'Foto kategori terpilih kosong' }) }
 
     const shuffle = a => { const b=[...a]; for(let i=b.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}; return b }
     const shuffled = shuffle(pool)
