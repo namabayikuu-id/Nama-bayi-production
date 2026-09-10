@@ -9,8 +9,8 @@
   ],
   "crons": [
     { "path": "/api/cron/cleanup", "schedule": "0 0 * * *" },
-    { "path": "/api/cron/photos", "schedule": "52 5 * * *" },
-    { "path": "/api/cron/generate", "schedule": "53 5 * * *" }
+    { "path": "/api/cron/photos", "schedule": "0 1 * * *" },
+    { "path": "/api/cron/generate", "schedule": "30 1 * * *" }
   ],
   "functions": {
     "api/index.js": { "includeFiles": "lib/**", "maxDuration": 300 }
