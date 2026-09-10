@@ -68,50 +68,57 @@ async function renderFrame(type, data, bgUrl) {
   } else if (type === "main") {
     const parts = data.parts || [];
     let fs = 68;
+    const lineH   = 64;
+    const pad     = 28;
+    const nameBoxH = 80;
+    const totalH  = nameBoxH + pad + parts.length * lineH + pad;
+    const bandY   = S - totalH - 20;
+
+    // Dark band bawah
+    const grad2 = ctx.createLinearGradient(0, bandY, 0, S);
+    grad2.addColorStop(0,    "rgba(0,0,0,0)");
+    grad2.addColorStop(0.25, "rgba(0,0,0,0.82)");
+    grad2.addColorStop(1,    "rgba(0,0,0,0.92)");
+    ctx.fillStyle = grad2;
+    ctx.fillRect(0, bandY, S, S - bandY);
+
+    // Nama lengkap — kotak hitam
     ctx.font = `bold ${fs}px Georgia, serif`;
-    while (ctx.measureText(data.fullName || "").width > S - 80 && fs > 40) {
+    while (ctx.measureText(data.fullName || "").width > S - 80 && fs > 36) {
       fs -= 3; ctx.font = `bold ${fs}px Georgia, serif`;
     }
+    const nameW2   = ctx.measureText(data.fullName || "").width;
+    const nameBoxY = bandY + 20;
+    ctx.fillStyle  = "rgba(0,0,0,0.75)";
+    ctx.beginPath();
+    ctx.roundRect(S/2 - nameW2/2 - 20, nameBoxY - 8, nameW2 + 40, nameBoxH, 14);
+    ctx.fill();
     ctx.fillStyle = "#ffffff";
-
-    const lineH = 72;
-    const blockH = lineH * parts.length;
-    const nameY = S / 2 - blockH / 2 - 30;
-    ctx.fillText(data.fullName || "", S / 2, nameY);
+    ctx.fillText(data.fullName || "", S / 2, nameBoxY + nameBoxH / 2 + fs * 0.35);
 
     // Divider
     ctx.fillStyle = "#c9a96e";
-    ctx.font = "bold 28px sans-serif";
-    ctx.fillText("✦", S / 2, nameY + 52);
+    ctx.font = "bold 22px sans-serif";
+    ctx.fillText("✦", S / 2, nameBoxY + nameBoxH + 18);
 
-    // Tiap kata: "Nama  :  artinya" — satu baris inline
+    // Kata : arti — satu baris
     parts.forEach((p, i) => {
-      const y = nameY + 100 + i * lineH;
-      const label = p.word + "  :  " + (p.meaning || "");
-      let pfs = 38;
+      const y = nameBoxY + nameBoxH + pad + i * lineH + lineH / 2;
+      const label = (p.word || "") + "  :  " + (p.meaning || "");
+      let pfs = 36;
       ctx.font = `bold ${pfs}px Georgia, serif`;
-      while (ctx.measureText(label).width > S - 120 && pfs > 24) {
+      while (ctx.measureText(label).width > S - 100 && pfs > 22) {
         pfs -= 2; ctx.font = `bold ${pfs}px Georgia, serif`;
       }
       const tw = ctx.measureText(label).width;
-
-      // Pill background
-      ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.beginPath();
-      ctx.roundRect(S/2 - tw/2 - 18, y - pfs/2 - 8, tw + 36, pfs + 18, 10);
-      ctx.fill();
-
-      // Kata — gold bold
+      const wordW = ctx.measureText((p.word || "") + "  :  ").width;
       ctx.fillStyle = "#c9a96e";
       ctx.font = `bold ${pfs}px Georgia, serif`;
-      const nameW = ctx.measureText(p.word + "  :  ").width;
       ctx.textAlign = "left";
-      ctx.fillText(p.word + "  :  ", S/2 - tw/2, y + 6);
-
-      // Arti — putih
+      ctx.fillText((p.word || "") + "  :  ", S/2 - tw/2, y);
       ctx.fillStyle = "rgba(255,255,255,0.92)";
       ctx.font = `${pfs}px Georgia, serif`;
-      ctx.fillText(p.meaning || "", S/2 - tw/2 + nameW, y + 6);
+      ctx.fillText(p.meaning || "", S/2 - tw/2 + wordW, y);
       ctx.textAlign = "center";
     });
 
