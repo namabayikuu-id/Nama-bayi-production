@@ -66,16 +66,53 @@ async function renderFrame(type, data, bgUrl) {
     ctx.fillText("HOOK", S / 2, 56);
 
   } else if (type === "main") {
-    ctx.fillStyle = "#fff"; ctx.font = "bold 68px Georgia, serif";
-    ctx.fillText(data.fullName || "", S / 2, S * 0.6);
-    ctx.fillStyle = "#c9a96e"; ctx.font = "bold 24px sans-serif";
-    ctx.fillText("✦", S / 2, S * 0.675);
-    (data.parts || []).forEach((p, i) => {
-      const y = S * 0.735 + i * 52;
-      ctx.fillStyle = "#c9a96e"; ctx.font = "bold 32px sans-serif";
-      ctx.fillText(p.word, S / 2, y);
-      ctx.fillStyle = "rgba(255,255,255,0.8)"; ctx.font = "300 26px sans-serif";
-      ctx.fillText(p.meaning || "", S / 2, y + 30);
+    const parts = data.parts || [];
+    let fs = 68;
+    ctx.font = `bold ${fs}px Georgia, serif`;
+    while (ctx.measureText(data.fullName || "").width > S - 80 && fs > 40) {
+      fs -= 3; ctx.font = `bold ${fs}px Georgia, serif`;
+    }
+    ctx.fillStyle = "#ffffff";
+
+    const lineH = 72;
+    const blockH = lineH * parts.length;
+    const nameY = S / 2 - blockH / 2 - 30;
+    ctx.fillText(data.fullName || "", S / 2, nameY);
+
+    // Divider
+    ctx.fillStyle = "#c9a96e";
+    ctx.font = "bold 28px sans-serif";
+    ctx.fillText("✦", S / 2, nameY + 52);
+
+    // Tiap kata: "Nama  :  artinya" — satu baris inline
+    parts.forEach((p, i) => {
+      const y = nameY + 100 + i * lineH;
+      const label = p.word + "  :  " + (p.meaning || "");
+      let pfs = 38;
+      ctx.font = `bold ${pfs}px Georgia, serif`;
+      while (ctx.measureText(label).width > S - 120 && pfs > 24) {
+        pfs -= 2; ctx.font = `bold ${pfs}px Georgia, serif`;
+      }
+      const tw = ctx.measureText(label).width;
+
+      // Pill background
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.beginPath();
+      ctx.roundRect(S/2 - tw/2 - 18, y - pfs/2 - 8, tw + 36, pfs + 18, 10);
+      ctx.fill();
+
+      // Kata — gold bold
+      ctx.fillStyle = "#c9a96e";
+      ctx.font = `bold ${pfs}px Georgia, serif`;
+      const nameW = ctx.measureText(p.word + "  :  ").width;
+      ctx.textAlign = "left";
+      ctx.fillText(p.word + "  :  ", S/2 - tw/2, y + 6);
+
+      // Arti — putih
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.font = `${pfs}px Georgia, serif`;
+      ctx.fillText(p.meaning || "", S/2 - tw/2 + nameW, y + 6);
+      ctx.textAlign = "center";
     });
 
   } else if (type === "cta") {
